@@ -1,0 +1,584 @@
+metadata:
+  version: "1"
+  dependencies:
+    apps:
+      - id: dynatrace.automations
+        version: ^1.2146.2
+  inputs: []
+workflow:
+  title: Local Cost per MZ
+  tasks:
+    js_set_parameters:
+      name: js_set_parameters
+      description: Run custom JavaScript code.
+      action: dynatrace.automations:run-javascript
+      input:
+        script: >-
+          export default async function () {
+
+
+          const FROM_DAY = "5";
+
+          const TO_DAY = "1";
+
+
+          const dataArray = [];
+
+
+          // Use a for loop to populate the array with objects
+
+          for (let i = TO_DAY; i <= FROM_DAY; i++) {
+            const item = {
+
+              to_day: "-"+i+"d@d",
+              from_day: "-"+i-1+"d@d",
+          };
+            dataArray.push(item);
+          }
+
+
+          // Convert the JavaScript array of objects into a JSON string
+            const jsonArrayString = JSON.stringify(dataArray);
+
+              let PARAMETERS = {
+
+              // CREDENTIAL - the credential vault entity ID that holds the Dynatrace API token value with metrics.ingest scope
+              JSON_ARRAY: jsonArrayString,
+              // BIZEVENT_INGEST_URL - the URL of the dynatrace bizevent ingest API endpoint
+              BIZEVENT_INGEST_URL: "https://bop84216.live.dynatrace.com/api/v2/bizevents/ingest", // i.e. INGEST_URL: "https://abc123.live.dynatrace.com/api/v2/metrics/ingest"
+
+              // WEBHOOK_URL- the URL of the webhook.site unique endpoint to send a daily bizevent summary
+
+            };
+            return PARAMETERS;
+          }
+      position:
+        x: 0
+        y: 1
+      predecessors: []
+    fetch_local_mz_cost_data:
+      name: fetch_local_mz_cost_data
+      description: Make use of Dynatrace Grail data in your workflow.
+      action: dynatrace.automations:execute-dql-query
+      input:
+        query: >-
+          timeseries 
+              { 
+                avail = avg(dt.host.memory.avail.bytes), 
+                used =  avg(dt.host.memory.used),
+                starts = start()
+              }, 
+              by: { dt.entity.host },
+              interval: 15m,
+              from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+             filter: { "FULL_STACK" == entityAttr(dt.entity.host, "monitoringMode") }
+            | lookup [fetch dt.entity.host, from: {{_.item['from_day']}} , to: {{_.item['to_day']}} | fields entity.name, id, managementZones | fieldsAdd managementZones = if(isNull(managementZones), "No_MZ", else:managementZones) | expand managementZones | filter managementZones != "BigPanda Alerts" ], sourceField:dt.entity.host, lookupField:id, prefix:"host.", executionOrder:leftFirst  
+            | fieldsAdd memoryGig = if((avail[] + used[])/(1024 * 1024 * 1024) > 256, 256, else:(avail[] + used[]) / (1024 * 1024 * 1024))
+            | summarize {interval = takeAny(interval), timeframe = takeAny(timeframe),starts = takeAny(starts), memory_gib_hour = sum(memoryGig[])}, by:{host.managementZones}
+            | fieldsAdd memory_gib_hour = record(memory_gib_hour = memory_gib_hour[], starts = starts[])
+            | expand memory_gib_hour
+            | fieldsAdd timestamp = memory_gib_hour[starts], memory_gib_hour = memory_gib_hour[memory_gib_hour]
+            | summarize {fullstack_cost = sum(memory_gib_hour/4.0)*0.0015, summary_date = takeAny(timestamp)}, by:{host.managementZones}
+            | sort fullstack_cost desc
+           
+            | append [timeseries 
+            { 
+              avail = avg(dt.host.memory.avail.bytes), 
+              used =  avg(dt.host.memory.used),
+              starts = start()
+            }, 
+            by: { dt.entity.host },
+            interval: 15m,
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            filter: { "FULL_STACK" == entityAttr(dt.entity.host, "monitoringMode") }
+          | lookup [fetch dt.entity.host, from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}} | fields entity.name, id, managementZones |
+          fieldsAdd managementZones = if(isNull(managementZones), "No_MZ",
+          else:managementZones) | expand managementZones | filter
+          managementZones != "BigPanda Alerts" ], sourceField:dt.entity.host,
+          lookupField:id, prefix:"host.", executionOrder:leftFirst  
+
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {numberofHosts = count(), summary_date =
+          takeAny(timestamp)}, by:{host.managementZones}
+
+          | sort numberofHosts desc]
+
+          | append [timeseries 
+            { 
+              availability = sum(dt.host.availability, default: 0),
+              starts = start()
+            }, 
+            by: { dt.entity.host },
+            interval: 15m,
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            filter: { "INFRASTRUCTURE" == entityAttr(dt.entity.host, "monitoringMode") and availability.state == "up"}
+          | fieldsAdd avail_count = (arraySize(availability)/4)
+
+          | lookup [fetch dt.entity.host, from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}}| fields entity.name, id, managementZones |
+          fieldsAdd managementZones = if(isNull(managementZones), "No_MZ",
+          else:managementZones) | expand managementZones | filter
+          managementZones != "BigPanda Alerts" ], sourceField:dt.entity.host,
+          lookupField:id, prefix:"host.", executionOrder:leftFirst  
+
+          // | lookup [fetch dt.entity.host | fields entity.name,
+          managementZones, id | expand managementZones | filter managementZones
+          != "BigPanda Alerts"], sourceField:dt.entity.host, lookupField:id,
+          prefix:"host.", executionOrder:leftFirst
+
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {infra_cost = sum(avail_count) * 0.006, summary_date =
+          takeAny(timestamp)}, by:{host.managementZones}
+
+          | sort infra_cost desc]
+
+          | append [fetch dt.entity.host , from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}}
+
+          | fields managementZones, monitoringMode 
+
+          | filter monitoringMode == "INFRASTRUCTURE"
+
+          | summarize infra_numberofHosts = count(), by:{managementZones}
+
+          | expand managementZones | filter managementZones != "BigPanda Alerts"
+
+          | sort infra_numberofHosts desc
+
+          | fieldsRename host.managementZones = managementZones]
+
+          | append [timeseries 
+            {avail = avg(dt.containers.memory.resident_set_bytes),
+            starts = start() },
+            by: { dt.entity.container_group_instance }, 
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval: 15m
+          | fieldsAdd entityName(dt.entity.container_group_instance),
+          avg_memory_used = arrayAvg(avail)
+
+          | lookup [fetch dt.entity.container_group_instance, from:
+          {{_.item['from_day']}} , to: {{_.item['to_day']}}
+                    | fields name = entity.name, id = id, mz = managementZones, lifetime = lifetime, host = belongs_to[dt.entity.host]],
+                    sourceField:dt.entity.container_group_instance.name, lookupField:name, prefix:"container.", executionOrder:leftFirst
+          | fieldsAdd memoryGig = if((avail[])/(1024 * 1024 * 1024) > 256, 256,
+          else:(avail[]) / (1024 * 1024 * 1024))
+
+          | summarize {interval = takeAny(interval), timeframe =
+          takeAny(timeframe),starts = takeAny(starts), memory_gib_hour =
+          sum(memoryGig[])}, by:{container.mz}
+
+          | fieldsAdd memory_gib_hour = record(memory_gib_hour =
+          memory_gib_hour[], starts = starts[])
+
+          | expand memory_gib_hour
+
+          | fieldsAdd timestamp = memory_gib_hour[starts], memory_gib_hour =
+          memory_gib_hour[memory_gib_hour]
+
+          | summarize {paas_cost = sum(memory_gib_hour/4.0)*0.0015, summary_date
+          = takeAny(timestamp)}, by:{container.mz}
+
+          | sort paas_cost desc
+
+          | fieldsRename host.managementZones = container.mz]
+
+          | append [timeseries 
+            {avail = avg(dt.containers.memory.resident_set_bytes),
+            starts = start() },
+            by: { dt.entity.container_group_instance },
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval: 15m
+          | fieldsAdd entityName(dt.entity.container_group_instance),
+          avg_memory_used = arrayAvg(avail)
+
+          | lookup [fetch dt.entity.container_group_instance, from:
+          {{_.item['from_day']}} , to: {{_.item['to_day']}}
+                    | fields name = entity.name, id = id, mz = managementZones, lifetime = lifetime, host = belongs_to[dt.entity.host]],
+                    sourceField:dt.entity.container_group_instance.name, lookupField:name, prefix:"container.", executionOrder:leftFirst
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {paas_numberofHosts = count(), summary_date =
+          takeAny(timestamp)}, by:{container.mz}
+
+          | sort paas_numberofHosts desc
+
+          | fieldsRename host.managementZones = container.mz]
+
+          | append [timeseries 
+            { 
+              availability = sum(dt.host.availability, default: 0),
+              starts = start()
+            }, 
+            by: { dt.entity.host },
+            interval: 15m,
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            filter: { "DISCOVERY" == entityAttr(dt.entity.host, "monitoringMode") and availability.state == "up"}
+          | fieldsAdd avail_count = (arraySize(availability)/4)
+
+          | lookup [fetch dt.entity.host, from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}} | fields entity.name, managementZones, id |
+          expand managementZones | filter managementZones != "BigPanda Alerts"],
+          sourceField:dt.entity.host, lookupField:id, prefix:"host.",
+          executionOrder:leftFirst
+
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {discovery_cost = sum(avail_count) * 0.0015, summary_date
+          = takeAny(timestamp)}, by:{host.managementZones}
+
+          | sort discovery_cost desc]
+
+          | append [fetch dt.entity.host, from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}}
+
+          | fieldsAdd managementZones, monitoringMode
+
+          | expand managementZones
+
+          | filter monitoringMode == "DISCOVERY"
+
+          | summarize discovery_numberofEntities = count(), by:{managementZones}
+
+          | fieldsAdd replaceString(managementZones,"BigPanda Alerts,","")
+
+          | sort discovery_numberofEntities desc
+
+          | fieldsRename host.managementZones = managementZones]
+
+          | append [timeseries {executions =
+          sum(dt.synthetic.http.request.executions),
+            starts = start()} ,
+            by: { dt.entity.http_check },
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval:1h
+            | fieldsAdd execution_count = arrayRemoveNulls(executions)
+            | fieldsAdd hours = arraySize(execution_count)
+            | fieldsAdd synthetic_actions = arraySum(executions)
+            | lookup [fetch dt.entity.http_check, from: {{_.item['from_day']}} , to: {{_.item['to_day']}} | fields entity.name, managementZones,lifetime, id, assignedLocations, syntheticMonitorFrequency, steps | expand managementZones | filter managementZones != "BigPanda Alerts"], sourceField:dt.entity.http_check, lookupField:id, prefix:"http.", executionOrder:leftFirst
+           | fieldsAdd frequency_per_hour = 60/http.syntheticMonitorFrequency
+           | fieldsAdd total_locations = arraySize(http.assignedLocations)
+           | fieldsAdd total_steps = arraySize(http.steps)
+           | fieldsAdd total_usage = hours * total_steps * frequency_per_hour * total_locations
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {http_cost = sum(total_usage) * 0.0002015, summary_date =
+          takeAny(timestamp)}, by:{http.managementZones}
+
+          | sort http_cost desc
+
+          | fieldsRename host.managementZone = http.managementZones]
+
+          | append [timeseries {executions =
+          sum(dt.synthetic.http.request.executions),
+            starts = start()} ,
+            by: { dt.entity.http_check },
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval:1h
+            | fieldsAdd execution_count = arrayRemoveNulls(executions)
+            | fieldsAdd hours = arraySize(execution_count)
+            | fieldsAdd synthetic_actions = arraySum(executions)
+            | lookup [fetch dt.entity.http_check, from: {{_.item['from_day']}} , to: {{_.item['to_day']}} | fields entity.name, managementZones,lifetime, id, assignedLocations, syntheticMonitorFrequency, steps | expand managementZones | filter managementZones != "BigPanda Alerts"], sourceField:dt.entity.http_check, lookupField:id, prefix:"http.", executionOrder:leftFirst
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {numberofhttpchecks = count(), summary_date =
+          takeAny(timestamp)}, by:{http.managementZones}
+
+          | sort numberofhttpchecks desc
+
+          | fieldsRename host.managementZone = http.managementZones]
+
+          | append [timeseries {executions =
+          sum(dt.synthetic.browser.event.executions),
+            starts = start()} ,
+            by: { dt.entity.synthetic_test },
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval:1h
+            | fieldsAdd execution_count = arrayRemoveNulls(executions)
+            | fieldsAdd hours = arraySize(execution_count)
+            | fieldsAdd synthetic_actions = arraySum(executions)
+            | lookup [fetch dt.entity.synthetic_test, from: {{_.item['from_day']}} , to: {{_.item['to_day']}} | fields entity.name, managementZones,lifetime, id, assignedLocations, syntheticMonitorFrequency, steps | expand managementZones | filter managementZones != "BigPanda Alerts"], sourceField:dt.entity.synthetic_test, lookupField:id, prefix:"browser.", executionOrder:leftFirst
+           | fieldsAdd frequency_per_hour = 60/browser.syntheticMonitorFrequency
+           | fieldsAdd total_locations = arraySize(browser.assignedLocations)
+           | fieldsAdd total_steps = arraySize(browser.steps)
+           | fieldsAdd total_usage = hours * total_steps * frequency_per_hour * total_locations
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {browser_cost = sum(total_usage) * 0.0018, summary_date =
+          takeAny(timestamp)}, by:{browser.managementZones}
+
+          | sort browser_cost desc
+
+          | fieldsRename host.managementZone = browser.managementZones]
+
+          | append [timeseries {executions =
+          sum(dt.synthetic.browser.event.executions),
+            starts = start()} ,
+            by: { dt.entity.synthetic_test },
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval:1h
+            | fieldsAdd execution_count = arrayRemoveNulls(executions)
+            | fieldsAdd hours = arraySize(execution_count)
+            | fieldsAdd synthetic_actions = arraySum(executions)
+            | lookup [fetch dt.entity.synthetic_test,  from: {{_.item['from_day']}} , to: {{_.item['to_day']}} | fields entity.name, managementZones,lifetime, id, assignedLocations, syntheticMonitorFrequency, steps | expand managementZones | filter managementZones != "BigPanda Alerts"], sourceField:dt.entity.synthetic_test, lookupField:id, prefix:"browser.", executionOrder:leftFirst
+          | fieldsAdd timestamp = starts[0]
+
+          | summarize {numberofsynthetics = count(), summary_date =
+          takeAny(timestamp)}, by:{browser.managementZones}
+
+          | sort numberofsynthetics desc
+
+          | fieldsRename host.managementZone = browser.managementZones]
+
+          | append [timeseries 
+            { 
+              avail = avg(dt.host.memory.avail.bytes), 
+              used =  avg(dt.host.memory.used),
+              starts = start()
+            }, 
+            by: { dt.entity.host },
+            from: {{_.item['from_day']}} , to: {{_.item['to_day']}},
+            interval: 15m,
+            filter: { isNull(monitoringMode) }
+          | lookup [fetch dt.entity.host,  from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}}| fields entity.name, managementZones, id ,
+          monitoringMode, paasVendorType | expand managementZones |  filter
+          managementZones != "BigPanda Alerts" ], sourceField:dt.entity.host,
+          lookupField:id, prefix:"host.", executionOrder:leftFirst  
+
+          | filter isNull(host.monitoringMode)
+
+          | filter host.paasVendorType == "KUBERNETES"
+
+          | fieldsAdd memoryGig = if((avail[] + used[])/(1024 * 1024 * 1024) >
+          256, 256, else:(avail[] + used[]) / (1024 * 1024 * 1024))
+
+          | summarize {interval = takeAny(interval), timeframe =
+          takeAny(timeframe),starts = takeAny(starts), memory_gib_hour =
+          sum(memoryGig[])}, by:{host.managementZones}
+
+          | fieldsAdd memory_gib_hour = record(memory_gib_hour =
+          memory_gib_hour[], starts = starts[])
+
+          | expand memory_gib_hour
+
+          | fieldsAdd timestamp = memory_gib_hour[starts], memory_gib_hour =
+          memory_gib_hour[memory_gib_hour]
+
+          | summarize {AppOnly_costs = sum(memory_gib_hour/4.0)*0.0015,
+          summary_date = takeAny(timestamp)}, by:{host.managementZones}
+
+          | sort AppOnly_costs desc]
+
+          | append [fetch dt.entity.host, from: {{_.item['from_day']}} , to:
+          {{_.item['to_day']}}
+
+          | fieldsAdd monitoringMode, managementZones
+
+          | filter isNull(monitoringMode) 
+
+          | filter paasVendorType == "KUBERNETES"
+
+          | summarize k8s_count = count(), by:{managementZones}
+
+          | fieldsRename host.managementZones = managementZones]
+
+          | fieldsAdd host.managementZones = if(isNull(host.managementZones),
+          "No_MZ", else:host.managementZones)
+
+          | summarize {summary_date = takeAny(summary_date), fullstack_cost =
+          takeAny(fullstack_cost), fullstack_numberofHosts =
+          takeAny(numberofHosts), infra_cost = takeAny(infra_cost),
+          infra_numberofHosts = takeAny(infra_numberofHosts), paas_cost =
+          takeAny(paas_cost), paas_numberofHosts = takeAny(paas_numberofHosts),
+          discovery_cost = takeAny(discovery_cost), discovery_numberofEntities =
+          takeAny(discovery_numberofEntities), http_cost = takeAny(http_cost),
+          numberofhttpchecks = takeAny(numberofhttpchecks), browser_cost =
+          takeAny(browser_cost), numberofsynthetics =
+          takeAny(numberofsynthetics), AppOnly_costs = takeAny(AppOnly_costs),
+          k8s_count = takeAny(k8s_count)}, by: host.managementZones
+
+          | fieldsAdd fullstack_cost = if(isNull(fullstack_cost), 0,
+          else:fullstack_cost)
+
+          | fieldsAdd fullstack_numberofHosts =
+          if(isNull(fullstack_numberofHosts), 0, else:fullstack_numberofHosts)
+
+          | fieldsAdd infra_cost = if(isNull(infra_cost), 0, else:infra_cost)
+
+          | fieldsAdd infra_numberofHosts = if(isNull(infra_numberofHosts), 0,
+          else:infra_numberofHosts)
+
+          | fieldsAdd paas_cost = if(isNull(paas_cost), 0, else:paas_cost)
+
+          | fieldsAdd paas_numberofHosts = if(isNull(paas_numberofHosts), 0,
+          else:paas_numberofHosts)
+
+          | fieldsAdd discovery_cost = if(isNull(discovery_cost), 0,
+          else:discovery_cost)
+
+          | fieldsAdd discovery_numberofEntities =
+          if(isNull(discovery_numberofEntities), 0,
+          else:discovery_numberofEntities)
+
+          | fieldsAdd http_cost = if(isNull(http_cost), 0, else:http_cost)
+
+          | fieldsAdd numberofhttpchecks = if(isNull(numberofhttpchecks), 0,
+          else:numberofhttpchecks)
+
+          | fieldsAdd browser_cost = if(isNull(browser_cost), 0,
+          else:browser_cost)
+
+          | fieldsAdd numberofsynthetics = if(isNull(numberofsynthetics), 0,
+          else:numberofsynthetics)
+
+          | fieldsAdd AppOnly_costs= if(isNull(AppOnly_costs), 0,
+          else:AppOnly_costs)
+
+          | fieldsAdd k8s_count = if(isNull(k8s_count), 0, else:k8s_count)
+
+          | fieldsAdd data_summary_time = now()
+
+          | fieldsAdd mz_total_cost = fullstack_cost + infra_cost + paas_cost +
+          discovery_cost + http_cost + browser_cost + AppOnly_costs
+
+          | fieldsAdd event.type = "mz_cost_event"
+
+          | fieldsAdd event.provider = "dynatrace"
+
+          | fieldsAdd event.cateogry = "mz_cost"
+
+          | fieldsRename managementZone = host.managementZones
+
+          | fields summary_date, managementZone, data_summary_time, event.type,
+          event.provider, event.cateogry,mz_total_cost, fullstack_cost,
+          fullstack_numberofHosts, infra_cost, infra_numberofHosts, paas_cost,
+          paas_numberofHosts, discovery_cost, discovery_numberofEntities,
+          http_cost, numberofhttpchecks, browser_cost, numberofsynthetics,
+          AppOnly_costs, k8s_count
+
+          | sort mz_total_cost desc
+      position:
+        x: 0
+        y: 2
+      predecessors:
+        - js_set_parameters
+      conditions:
+        states:
+          js_set_parameters: OK
+      concurrency: 1
+      withItems: item in {{result("js_set_parameters").JSON_ARRAY}}
+    ingest_cost_bizevent_data:
+      name: ingest_cost_bizevent_data
+      description: Run custom JavaScript code.
+      action: dynatrace.automations:run-javascript
+      input:
+        script: >-
+          // optional import of sdk modules
+
+          import { execution, actionExecution } from
+          '@dynatrace-sdk/automation-utils';
+
+          import { queryExecutionClient } from '@dynatrace-sdk/client-query';
+
+          import { getCurrentUserDetails,getEnvironmentId,getEnvironmentUrl }
+          from '@dynatrace-sdk/app-environment';
+
+          import { credentialVaultClient } from
+          '@dynatrace-sdk/client-classic-environment-v2';
+
+
+          const PARAMETERS_TASK = 'js_set_parameters';
+
+
+          export default async function ({execution_id, loopItemValue }) {
+            // log the current value of the loop item
+            //console.log(loopItemValue);
+            const ex = await execution(execution_id);
+            const parameters = await ex.result(PARAMETERS_TASK);
+            // BIZEVENT_URL
+            const BIZEVENT_INGEST_URL = parameters['BIZEVENT_INGEST_URL'];
+            
+            const costRecords = loopItemValue.records[0];
+            console.log(costRecords);
+
+            const fullstack_cost = costRecords['fullstack_cost'];
+            const summary_date = costRecords['summary_date'];
+            const infra_cost = costRecords['infra_cost'];
+            const mz_total_cost = costRecords['mz_total_cost'];
+            const paas_cost = costRecords['paas_cost'];
+            const discovery_cost = costRecords['discovery_cost'];
+            const AppOnly_costs = costRecords['AppOnly_costs'];
+            const http_cost = costRecords['fullstack_cost'];
+            const browser_cost = costRecords['browser_cost'];
+            const fullstack_numberofHosts = costRecords['fullstack_numberofHosts'];
+            const infra_numberofHosts = costRecords['infra_numberofHosts'];
+            const paas_numberofHosts = costRecords['paas_numberofHosts'];
+            const discovery_numberofEntities = costRecords['discovery_numberofEntities'];
+            const numberofhttpchecks = costRecords['numberofhttpchecks'];
+            const numberofsynthetics = costRecords['numberofsynthetics'];
+            const k8s_count = costRecords['k8s_count'];
+            const managementZone = costRecords['managementZone'];
+            const event_type = costRecords["event.type"];
+            const event_provider = costRecords["event.provider"];
+            const event_cateogry = costRecords["event.cateogry"];
+
+                
+                const options = {
+                  method: "POST",
+                  headers: {
+                    'content-type': "application/json",
+                    'Authorization': "Api-Token <API-TOKEN>",
+                  },
+                  body: JSON.stringify({
+                    'event.type': event_type,
+                    'event.category': event_cateogry,
+                    'event.provider': event_provider,
+                    summary_date: summary_date,
+                    fullstack_cost: fullstack_cost,
+                    infra_cost: infra_cost,
+                    mz_total_cost: mz_total_cost,
+                    paas_cost: paas_cost,
+                    discovery_cost: discovery_cost,
+                    AppOnly_costs: AppOnly_costs,
+                    http_cost: http_cost,
+                    browser_cost: browser_cost,
+                    fullstack_numberofHosts: fullstack_numberofHosts,
+                    infra_numberofHosts: infra_numberofHosts,
+                    paas_numberofHosts: paas_numberofHosts,
+                    discovery_numberofEntities: discovery_numberofEntities,
+                    numberofhttpchecks: numberofhttpchecks,
+                    numberofsynthetics: numberofsynthetics,
+                    k8s_count: k8s_count,
+                    managementZone: managementZone
+                  })
+                };
+            
+                // execute the fetch() api call
+                // set the url parameter equal to the status.io url parameter
+                const url = BIZEVENT_INGEST_URL;
+                // make the fetch call, passing the url and options, capture the response
+                const response = await fetch(url,options);
+                // capture the response code
+                const response_status = response.status;
+            return;
+          }
+      position:
+        x: 0
+        y: 3
+      predecessors:
+        - fetch_local_mz_cost_data
+      conditions:
+        states:
+          fetch_local_mz_cost_data: OK
+      concurrency: 1
+      withItems: item in {{result("fetch_local_mz_cost_data")}}
+  description: ""
+  trigger: {}
+  schemaVersion: 3
+  result: null
+  input: {}
+  hourlyExecutionLimit: 1000
+  type: STANDARD
