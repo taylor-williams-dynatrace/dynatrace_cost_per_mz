@@ -22,6 +22,40 @@ workflow:
           const TO_DAY = "1";
 
 
+          // DPS Cost Items
+
+          const FS_COST = "150";
+
+          const INFRA_COST = "600";
+
+          const FD_COST = "150";
+
+          const HTTP_COST = "20.05";
+
+          const BROWSER_COST = "180";
+
+          const APP_COST = "150";
+
+          const PAAS_COST = "150";
+
+
+          // DPS Measurement Calculations: DO NOT ADJUST
+
+          const FS_COST_DQL = FS_COST / 100000;
+
+          const INFRA_COST_DQL = INFRA_COST / 100000;
+
+          const FD_COST_DQL = FD_COST / 100000;
+
+          const HTTP_COST_DQL = HTTP_COST / 100000;
+
+          const BROWSER_COST_DQL = BROWSER_COST / 100000;
+
+          const APP_COST_DQL = APP_COST / 100000; 
+
+          const PAAS_COST_DQL = PAAS_COST / 100000;
+
+
           const dataArray = [];
 
 
@@ -42,12 +76,16 @@ workflow:
 
               let PARAMETERS = {
 
-              // CREDENTIAL - the credential vault entity ID that holds the Dynatrace API token value with metrics.ingest scope
               JSON_ARRAY: jsonArrayString,
               // BIZEVENT_INGEST_URL - the URL of the dynatrace bizevent ingest API endpoint
               BIZEVENT_INGEST_URL: "https://bop84216.live.dynatrace.com/api/v2/bizevents/ingest", // i.e. INGEST_URL: "https://abc123.live.dynatrace.com/api/v2/metrics/ingest"
-
-              // WEBHOOK_URL- the URL of the webhook.site unique endpoint to send a daily bizevent summary
+              FS_COST_DQL: FS_COST_DQL,
+              INFRA_COST_DQL: INFRA_COST_DQL,
+              FD_COST_DQL: FD_COST_DQL,
+              HTTP_COST_DQL: HTTP_COST_DQL,
+              BROWSER_COST_DQL: BROWSER_COST_DQL,
+              APP_COST_DQL: APP_COST_DQL,
+              PAAS_COST_DQL: PAAS_COST_DQL
 
             };
             return PARAMETERS;
@@ -78,7 +116,7 @@ workflow:
             | fieldsAdd memory_gib_hour = record(memory_gib_hour = memory_gib_hour[], starts = starts[])
             | expand memory_gib_hour
             | fieldsAdd timestamp = memory_gib_hour[starts], memory_gib_hour = memory_gib_hour[memory_gib_hour]
-            | summarize {fullstack_cost = sum(memory_gib_hour/4.0)*0.0015, summary_date = takeAny(timestamp)}, by:{host.managementZones}
+            | summarize {fullstack_cost = sum(memory_gib_hour)*{{result("js_set_parameters").FS_COST_DQL}}, summary_date = takeAny(timestamp)}, by:{host.managementZones}
             | sort fullstack_cost desc
            
             | append [timeseries 
@@ -130,7 +168,8 @@ workflow:
 
           | fieldsAdd timestamp = starts[0]
 
-          | summarize {infra_cost = sum(avail_count) * 0.006, summary_date =
+          | summarize {infra_cost = sum(avail_count) *
+          {{result("js_set_parameters").INFRA_COST_DQL}}, summary_date =
           takeAny(timestamp)}, by:{host.managementZones}
 
           | sort infra_cost desc]
@@ -178,8 +217,9 @@ workflow:
           | fieldsAdd timestamp = memory_gib_hour[starts], memory_gib_hour =
           memory_gib_hour[memory_gib_hour]
 
-          | summarize {paas_cost = sum(memory_gib_hour/4.0)*0.0015, summary_date
-          = takeAny(timestamp)}, by:{container.mz}
+          | summarize {paas_cost =
+          sum(memory_gib_hour)*{{result("js_set_parameters").PAAS_COST_DQL}},
+          summary_date = takeAny(timestamp)}, by:{container.mz}
 
           | sort paas_cost desc
 
@@ -226,8 +266,9 @@ workflow:
 
           | fieldsAdd timestamp = starts[0]
 
-          | summarize {discovery_cost = sum(avail_count) * 0.0015, summary_date
-          = takeAny(timestamp)}, by:{host.managementZones}
+          | summarize {discovery_cost = sum(avail_count) *
+          {{result("js_set_parameters").FD_COST_DQL}}, summary_date =
+          takeAny(timestamp)}, by:{host.managementZones}
 
           | sort discovery_cost desc]
 
@@ -264,7 +305,8 @@ workflow:
            | fieldsAdd total_usage = hours * total_steps * frequency_per_hour * total_locations
           | fieldsAdd timestamp = starts[0]
 
-          | summarize {http_cost = sum(total_usage) * 0.0002015, summary_date =
+          | summarize {http_cost = sum(total_usage) *
+          {{result("js_set_parameters").HTTP_COST_DQL}}, summary_date =
           takeAny(timestamp)}, by:{http.managementZones}
 
           | sort http_cost desc
@@ -306,7 +348,8 @@ workflow:
            | fieldsAdd total_usage = hours * total_steps * frequency_per_hour * total_locations
           | fieldsAdd timestamp = starts[0]
 
-          | summarize {browser_cost = sum(total_usage) * 0.0018, summary_date =
+          | summarize {browser_cost = sum(total_usage) *
+          {{result("js_set_parameters").BROWSER_COST_DQL}}, summary_date =
           takeAny(timestamp)}, by:{browser.managementZones}
 
           | sort browser_cost desc
@@ -367,7 +410,8 @@ workflow:
           | fieldsAdd timestamp = memory_gib_hour[starts], memory_gib_hour =
           memory_gib_hour[memory_gib_hour]
 
-          | summarize {AppOnly_costs = sum(memory_gib_hour/4.0)*0.0015,
+          | summarize {AppOnly_costs =
+          sum(memory_gib_hour)*{{result("js_set_parameters").APP_COST_DQL}},
           summary_date = takeAny(timestamp)}, by:{host.managementZones}
 
           | sort AppOnly_costs desc]
