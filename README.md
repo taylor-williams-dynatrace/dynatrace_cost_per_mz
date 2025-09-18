@@ -20,3 +20,8 @@ Follow these initial steps to get the workflow working in yours or your customer
 **Time Period:** Depending on how far back you would like data summarized, adjust the "FROM_DAY" and "TO_DAY" settings on lines 3 and 4. For example, if I want to run an initial summary for the past 30 days, I would set "FROM_DAY" to 30 and "TO_DAY" to 0. These variables can be set back as far as the retention of your metrics are available.
 
 **DPS Costs:** For your customer's cost consumption, you need only supply the DPS Unit cost in each variable contained in lines 7 - 12 of the workflow. For example, the FS_COST variable represents the Unit Cost for Full Stack monitoring. In your customer's rate card, you will see a Unit Cost for Full Stack monitoring, for example $150. You need only change the value in the workflow to that Unit Cost, and the measurement/consumption is auto-calculated through the rest of the workflow based on the system metrics queried.
+
+## Adjust the "ingest_cost_bizevent_data" task
+For this task, you need only supply a valid API Token to line 46. Replace "<API-TOKEN>" with a valid token that has the Bizevents Ingest capability. Future iterations of this workflow will have a credential vault entry instead of the plain-text token included. Until then, you can of course add credential vault capability to this JS task or simply use the plain text for the time being.
+
+For any questions, please reach out to Taylor Williams :) 
